@@ -1,0 +1,12 @@
+{
+    "registries": [
+        {
+            "name": "arm",
+            "kind": "artifact",
+            "location": "https://artifacts.tools.arm.com/vcpkg-registry"
+        }
+    ],
+    "requires": {
+        "arm:tools/open-cmsis-pack/cmsis-toolbox": "2.9.0"
+    }
+}

@@ -1,3 +1,5 @@
-../Core/Src/main.c:12:6:Task1	1
-../Core/Src/main.c:19:6:Task2	1
-../Core/Src/main.c:27:5:main	1
+../Core/Src/main.c:16:6:ADC1_Init	4
+../Core/Src/main.c:46:6:DMA1_Channel1_Init	1
+../Core/Src/main.c:60:6:PWM_INIT	1
+../Core/Src/main.c:77:6:PWM_SET_DUTY	1
+../Core/Src/main.c:83:5:main	1

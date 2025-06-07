@@ -1,115 +1,156 @@
+// === touchscreen.c ===
+
 #include "stm32f10x.h"
+#include <stdint.h>
 
-volatile uint16_t x_pos = 0;
-volatile uint16_t y_pos = 0;
+// Touchscreen pin definitions (adjust based on your wiring)
+#define XP_PIN 0  // PA0
+#define XM_PIN 1  // PA1
+#define YP_PIN 2  // PA2
+#define YM_PIN 3  // PA3
 
-// === Delay Function ===
-void delay_us(uint32_t time) {
-    for (volatile uint32_t i = 0; i < time * 8; i++);
+// Calibrated ADC ranges (measured manually)
+#define X_MIN 200
+#define X_MAX 3800
+#define Y_MIN 250
+#define Y_MAX 3700
+
+#define SCREEN_WIDTH_MM 80.0f
+#define SCREEN_HEIGHT_MM 50.0f
+
+// Touch position structure
+typedef struct {
+    int16_t x;
+    int16_t y;
+    int16_t z; // optional pressure
+} TSPoint;
+
+// Real-world coordinates in mm
+typedef struct {
+    float x_mm;
+    float y_mm;
+    int16_t z;
+} TSRealPoint;
+
+// === Delay helper ===
+void delay_us(uint32_t us) {
+    for (volatile uint32_t i = 0; i < us * 8; i++);
 }
 
 // === ADC Initialization ===
 void ADC1_Init(void) {
-    RCC->APB2ENR |= RCC_APB2ENR_ADC1EN;
-
-    ADC1->CR2 |= ADC_CR2_ADON;  // Power on
-    for (volatile int i = 0; i < 1000; i++);
-
-    ADC1->CR2 |= ADC_CR2_RSTCAL;
+    RCC->APB2ENR |= RCC_APB2ENR_ADC1EN;      // Enable ADC1 clock
+    ADC1->CR2 |= ADC_CR2_ADON;               // Power on
+    delay_us(10);
+    //SET SAMPLING RATE TO 41.5 CYCLES (ADC_SMPR2_SMP_41_5)
+    ADC1->SMPR2 |= ADC_SMPR2_SMP0;           // Set sampling time for channel 0 (PA0)
+    ADC1->CR2 |= ADC_CR2_RSTCAL;             // Reset calibration
     while (ADC1->CR2 & ADC_CR2_RSTCAL);
-
-    ADC1->CR2 |= ADC_CR2_CAL;
+    ADC1->CR2 |= ADC_CR2_CAL;                // Start calibration
     while (ADC1->CR2 & ADC_CR2_CAL);
 }
 
+// === ADC Read (single channel) ===
 uint16_t ADC1_Read_Channel(uint8_t channel) {
-    ADC1->SQR3 = channel;               // Select ADC channel
-    ADC1->CR2 |= ADC_CR2_ADON;          // Start conversion
-    while (!(ADC1->SR & ADC_SR_EOC));   // Wait until done
-    return ADC1->DR;
+    ADC1->SQR3 = channel;            // Select channel
+    ADC1->CR2 |= ADC_CR2_ADON;       // Start conversion
+    while (!(ADC1->SR & ADC_SR_EOC)); // Wait for conversion complete
+    return ADC1->DR;                 // Return result
 }
 
-// === GPIO Setup ===
-void GPIO_Init(void) {
-    RCC->APB2ENR |= RCC_APB2ENR_IOPAEN;  // Enable GPIOA clock
+// === Read X Position ===
+int readTouchX(void) {
+    // XP = HIGH, XM = LOW, YP = analog input, YM = Hi-Z
+
+    // XP = PA0 → Output HIGH
+    GPIOA->CRL &= ~(0xF << (XP_PIN * 4));
+    GPIOA->CRL |=  (0x1 << (XP_PIN * 4));
+    GPIOA->BSRR = (1 << XP_PIN);
+
+    // XM = PA1 → Output LOW
+    GPIOA->CRL &= ~(0xF << (XM_PIN * 4));
+    GPIOA->CRL |=  (0x1 << (XM_PIN * 4));
+    GPIOA->BRR = (1 << XM_PIN);
+
+    // YP = PA2 → Analog input
+    GPIOA->CRL &= ~(0xF << (YP_PIN * 4));
+
+    delay_us(20);
+    return 4095 - ADC1_Read_Channel(YP_PIN);  // Read from Y+ (PA2)
 }
 
-// === Read X Position (Y+ = ADC, X+/X− = VCC/GND) ===
-void Read_X_Position(void) {
-    // X+ (PA0) = VCC
-    GPIOA->CRL &= ~(0xF << (0 * 4));        // Clear bits
-    GPIOA->CRL |= (0x1 << (0 * 4));         // Output mode
-    GPIOA->BSRR = GPIO_BSRR_BS0;
+// === Read Y Position ===
+int readTouchY(void) {
+    // YP = HIGH, YM = LOW, XP = analog input, XM = Hi-Z
 
-    // X− (PA1) = GND
-    GPIOA->CRL &= ~(0xF << (1 * 4));
-    GPIOA->CRL |= (0x1 << (1 * 4));
-    GPIOA->BRR = GPIO_BRR_BR1;
+    // YP = PA2 → Output HIGH
+    GPIOA->CRL &= ~(0xF << (YP_PIN * 4));
+    GPIOA->CRL |=  (0x1 << (YP_PIN * 4));
+    GPIOA->BSRR = (1 << YP_PIN);
 
-    // Y+ (PA2) = ADC input
-    GPIOA->CRL &= ~(0xF << (2 * 4));        // Analog input
+    // YM = PA3 → Output LOW
+    GPIOA->CRL &= ~(0xF << (YM_PIN * 4));
+    GPIOA->CRL |=  (0x1 << (YM_PIN * 4));
+    GPIOA->BRR = (1 << YM_PIN);
 
-    delay_us(10);  // Let voltages stabilize
+    // XP = PA0 → Analog input
+    GPIOA->CRL &= ~(0xF << (XP_PIN * 4));
 
-    x_pos = ADC1_Read_Channel(2);  // Read PA2
+    delay_us(20);
+    return 4095 - ADC1_Read_Channel(XP_PIN);  // Read from X+ (PA0)
 }
 
-// === Read Y Position (X+ = ADC, Y+/Y− = VCC/GND) ===
-void Read_Y_Position(void) {
-    // Y+ (PA2) = VCC
-    GPIOA->CRL &= ~(0xF << (2 * 4));
-    GPIOA->CRL |= (0x1 << (2 * 4));
-    GPIOA->BSRR = GPIO_BSRR_BS2;
+// === Read Pressure ===
+int readTouchPressure(void) {
+    // XP = GND, YM = VCC, XM = analog input, YP = analog input
 
-    // Y− (PA3) = GND
-    GPIOA->CRL &= ~(0xF << (3 * 4));
-    GPIOA->CRL |= (0x1 << (3 * 4));
-    GPIOA->BRR = GPIO_BRR_BR3;
+    // XP = PA0 → Output LOW
+    GPIOA->CRL &= ~(0xF << (XP_PIN * 4));
+    GPIOA->CRL |=  (0x1 << (XP_PIN * 4));
+    GPIOA->BRR = (1 << XP_PIN);
 
-    // X+ (PA0) = ADC input
-    GPIOA->CRL &= ~(0xF << (0 * 4));  // Analog input
+    // YM = PA3 → Output HIGH
+    GPIOA->CRL &= ~(0xF << (YM_PIN * 4));
+    GPIOA->CRL |=  (0x1 << (YM_PIN * 4));
+    GPIOA->BSRR = (1 << YM_PIN);
 
-    delay_us(10);
+    // XM = PA1 → Analog input
+    GPIOA->CRL &= ~(0xF << (XM_PIN * 4));
 
-    y_pos = ADC1_Read_Channel(0);  // Read PA0
+    // YP = PA2 → Analog input
+    GPIOA->CRL &= ~(0xF << (YP_PIN * 4));
+
+    delay_us(20);
+    int z1 = ADC1_Read_Channel(XM_PIN);
+    int z2 = ADC1_Read_Channel(YP_PIN);
+
+    return 4095 - (z2 - z1);  // Simple pressure approximation
 }
 
-// === PWM Initialization (TIM3_CH1 on PA6) ===
-void PWM_INIT(void) {
-    RCC->APB2ENR |= RCC_APB2ENR_IOPAEN;
-    RCC->APB1ENR |= RCC_APB1ENR_TIM3EN;
-
-    // PA6 = TIM3_CH1 (AF output push-pull)
-    GPIOA->CRL &= ~(GPIO_CRL_MODE6 | GPIO_CRL_CNF6);
-    GPIOA->CRL |= GPIO_CRL_MODE6_1 | GPIO_CRL_MODE6_0 | GPIO_CRL_CNF6_1;
-
-    TIM3->PSC = 7200 - 1;       // 72 MHz / 7200 = 10 kHz timer clock
-    TIM3->ARR = 1000;           // Period = 100 ms
-    TIM3->CCR1 = 500;           // 50% initial duty
-
-    TIM3->CCMR1 &= ~TIM_CCMR1_OC1M;
-    TIM3->CCMR1 |= TIM_CCMR1_OC1M_1 | TIM_CCMR1_OC1M_2;  // PWM mode 1
-    TIM3->CCMR1 |= TIM_CCMR1_OC1PE;                     // Preload enable
-    TIM3->CCER |= TIM_CCER_CC1E;                        // Enable output
-    TIM3->CR1 |= TIM_CR1_CEN;                           // Start timer
-    TIM3->EGR |= TIM_EGR_UG;                            // Force update
+// === Combined Point Read ===
+TSPoint getTouchPoint(void) {
+    TSPoint p;
+    p.x = readTouchX();
+    delay_us(50);  // Allow voltages to settle
+    p.y = readTouchY();
+    p.z = readTouchPressure();
+    return p;
 }
 
-// === Set PWM Duty Cycle (scaled from 0–4095 to 0–100%) ===
-void PWM_SET_DUTY(uint16_t adc_value) {
-    uint16_t duty = (adc_value * TIM3->ARR) / 4095;
-    TIM3->CCR1 = duty;
-}
+// === Convert raw point to real-world coordinates (mm) ===
+TSRealPoint getRealTouchPoint(void) {
+    TSPoint raw = getTouchPoint();
+    TSRealPoint real;
 
-// === Main Program ===
-int main(void) {
-    GPIO_Init();
-    ADC1_Init();
-    PWM_INIT();
+    real.x_mm = ((float)(raw.x - X_MIN) / (X_MAX - X_MIN)) * SCREEN_WIDTH_MM;
+    real.y_mm = ((float)(raw.y - Y_MIN) / (Y_MAX - Y_MIN)) * SCREEN_HEIGHT_MM;
+    real.z = raw.z;
 
-    while (1) {
-        Read_X_Position();          // Update x_pos from touchscreen
-        PWM_SET_DUTY(x_pos);        // Set duty based on x_pos
-        delay_us(1000);             // Optional delay
-    }
+    // Clamp to screen bounds
+    if (real.x_mm < 0) real.x_mm = 0;
+    if (real.x_mm > SCREEN_WIDTH_MM) real.x_mm = SCREEN_WIDTH_MM;
+    if (real.y_mm < 0) real.y_mm = 0;
+    if (real.y_mm > SCREEN_HEIGHT_MM) real.y_mm = SCREEN_HEIGHT_MM;
+
+    return real;
 }
